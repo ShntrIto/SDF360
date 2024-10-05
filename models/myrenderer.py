@@ -136,9 +136,9 @@ class MyRenderer:
         batch_size, n_samples = z_vals.shape
         pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]  # n_rays, n_samples, 3
         radius = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=False)
-        # inside_sphere = (radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0)
+        inside_sphere = (radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0)
         rays_o_pts_norm = torch.linalg.norm(rays_o[:, None, :]-pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
-        inside_sphere = torch.logical_and(((rays_o_pts_norm[:, :-1] > 0.5) | (rays_o_pts_norm[:, 1:] > 0.5)), ((radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0))).float().detach() # [N_rays, N_samples]
+        # inside_sphere = torch.logical_and(((rays_o_pts_norm[:, :-1] > 0.5) | (rays_o_pts_norm[:, 1:] > 0.5)), ((radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0))).float().detach() # [N_rays, N_samples]
         sdf = sdf.reshape(batch_size, n_samples)
         # import pdb
         # pdb.set_trace()
@@ -282,10 +282,10 @@ class MyRenderer:
         alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0)
 
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
-        # inside_sphere = (pts_norm < 1.0).float().detach() # [N_rays, N_samples]
+        inside_sphere = (pts_norm < 1.0).float().detach() # [N_rays, N_samples]
         rays_o_pts_norm = torch.linalg.norm(rays_o[:, None, :].expand(-1, n_samples, -1).reshape(-1,3)-pts, \
                                             ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
-        inside_sphere = torch.logical_and((rays_o_pts_norm > 0.5), (pts_norm < 1.0)).float().detach() # [N_rays, N_samples]
+        # inside_sphere = torch.logical_and((rays_o_pts_norm > 0.5), (pts_norm < 1.0)).float().detach() # [N_rays, N_samples]
         relax_inside_sphere = (pts_norm < 1.2).float().detach()
 
         # Render with background

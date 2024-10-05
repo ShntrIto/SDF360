@@ -190,13 +190,15 @@ class Dataset:
         return near, far
 
     # デバッグとして一時的にここに置く
-    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=200, epsilon=0.01):
+    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=20, epsilon=0.01):
         '''
         注目領域（単位球）の中にカメラがある場合は，カメラ原点から微小に離れた点を near,
         単位球と交差する点までの距離を far としてレンダリング範囲を定義する
         '''
-        inner_prod_od = torch.sum(rays_o*rays_d, dim=-1, keepdim=True)
-        power_o = torch.sum(rays_o**2, dim=-1, keepdim=True)
+        # inner_prod_od = torch.sum(rays_o*rays_d, dim=-1, keepdim=True)
+        # power_o = torch.sum(rays_o**2, dim=-1, keepdim=True)
+        inner_prod_od = torch.bmm(rays_o.view(-1, 1, 3), rays_d.view(-1, 3, 1)).view(-1, 1)
+        power_o = torch.bmm(rays_o.view(-1, 1, 3), rays_o.view(-1, 3, 1)).view(-1, 1)
 
         # t が大きい方（必然的に正の値）を単位球面への距離とする
         # t is the distance from the camera origin to the intersection point with the unit sphere
@@ -210,7 +212,8 @@ class Dataset:
         far = far + alpha * epsilon
         # 試しに，固定値でやってみる
         # Try a constant value
-        near = torch.full(far.shape, epsilon)
+        # far = torch.full(far.shape, 2.0)
+        near = torch.full(far.shape, 0.05)
         return near, far
 
     def image_at(self, idx, resolution_level):
@@ -312,15 +315,18 @@ class ErpDataset(Dataset):
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) # batch_size, 3
         return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1).cuda()    # batch_size, 10
 
-    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=10, epsilon=0.001):
+    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=20, epsilon=0.01):
         '''
         注目領域（単位球）の中にカメラがある場合は，カメラ原点から微小に離れた点を near,
         単位球と交差する点までの距離を far としてレンダリング範囲を定義する
         '''
-        inner_prod_od = torch.sum(rays_o*rays_d, dim=-1, keepdim=True)
-        power_o = torch.sum(rays_o**2, dim=-1, keepdim=True)
+        # inner_prod_od = torch.sum(rays_o*rays_d, dim=-1, keepdim=True)
+        # power_o = torch.sum(rays_o**2, dim=-1, keepdim=True)
+        inner_prod_od = torch.bmm(rays_o.view(-1, 1, 3), rays_d.view(-1, 3, 1)).view(-1, 1)
+        power_o = torch.bmm(rays_o.view(-1, 1, 3), rays_o.view(-1, 3, 1)).view(-1, 1)
 
         # t が大きい方（必然的に正の値）を単位球面への距離とする
+        # t is the distance from the camera origin to the intersection point with the unit sphere
         far1 = -inner_prod_od - torch.sqrt(inner_prod_od**2 - power_o + 1)
         far2 = -inner_prod_od + torch.sqrt(inner_prod_od**2 - power_o + 1)
         far = torch.maximum(far1, far2)
@@ -329,5 +335,10 @@ class ErpDataset(Dataset):
             raise ValueError("The value of far must be positive")
         
         far = far + alpha * epsilon
-        near = torch.full(far.shape, epsilon)
-        return near, far
+        # 試しに，固定値でやってみる
+        # Try a constant value
+        # near = torch.full(far.shape, epsilon*20)
+        
+        insta_far = torch.full(far.shape, 2.0) # 一度固定値にして実装ミスの可能性を減らす
+        near = torch.full(far.shape, 0.05)
+        return near, insta_far

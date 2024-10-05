@@ -59,9 +59,6 @@ if __name__ == '__main__':
     radius = np.linalg.norm(vertices - center, ord=2, axis=-1).max()
     scale_mat = np.diag([radius, radius, radius, 1.0]).astype(np.float32)
     scale_mat[:3, 3] = center
-
-    import pdb
-    pdb.set_trace()
     
     for i in range(n_images):
         cam_dict['scale_mat_{}'.format(i)] = scale_mat
