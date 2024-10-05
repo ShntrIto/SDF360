@@ -283,9 +283,6 @@ class MyRenderer:
 
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
         inside_sphere = (pts_norm < 1.0).float().detach() # [N_rays, N_samples]
-        rays_o_pts_norm = torch.linalg.norm(rays_o[:, None, :].expand(-1, n_samples, -1).reshape(-1,3)-pts, \
-                                            ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
-        # inside_sphere = torch.logical_and((rays_o_pts_norm > 0.5), (pts_norm < 1.0)).float().detach() # [N_rays, N_samples]
         relax_inside_sphere = (pts_norm < 1.2).float().detach()
 
         # Render with background
@@ -299,6 +296,7 @@ class MyRenderer:
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
         weights_sum = weights.sum(dim=-1, keepdim=True)
 
+        # TODO: depth を推定する
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
         if background_rgb is not None:    # Fixed background, usually black
             color = color + background_rgb * (1.0 - weights_sum)
