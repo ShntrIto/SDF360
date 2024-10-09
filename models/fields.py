@@ -69,6 +69,7 @@ class SDFNetwork(nn.Module):
 
             if weight_norm:
                 lin = nn.utils.weight_norm(lin)
+                # lin = nn.utils.parametrizations.weight_norm(lin)
 
             setattr(self, "lin" + str(l), lin)
 
@@ -147,6 +148,7 @@ class RenderingNetwork(nn.Module):
 
             if weight_norm:
                 lin = nn.utils.weight_norm(lin)
+                # lin = nn.utils.parametrizations.weight_norm(lin)
 
             setattr(self, "lin" + str(l), lin)
 

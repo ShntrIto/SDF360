@@ -26,27 +26,28 @@ def load_colmap_data(realdir):
     hwf = np.array([h,w,f]).reshape([3,1])
     
     imagesfile = os.path.join(realdir, 'sparse/0/images.txt')
-    imdata = read_model.read_images_text(imagesfile)
+    imdata = read_model.read_images_text(imagesfile) # 画像のメタデータを読み込む
     
     w2c_mats = []
     bottom = np.array([0,0,0,1.]).reshape([1,4])
     
     names = [imdata[k].name for k in imdata]
     print( 'Images #', len(names))
-    perm = np.argsort(names)
+    perm = np.argsort(names) # 画像の名前をソートして保存（TODO: 何のためか理解する）
+
     for k in imdata:
+        # imdata から各種メタデータを取得
         im = imdata[k]
         R = im.qvec2rotmat()
         t = im.tvec.reshape([3,1])
         m = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
-        w2c_mats.append(m)
+        w2c_mats.append(m) # 世界座標系からカメラ座標系への外部パラメータ
     
     w2c_mats = np.stack(w2c_mats, 0)
     c2w_mats = np.linalg.inv(w2c_mats)
     
     poses = c2w_mats[:, :3, :4].transpose([1,2,0])
     poses = np.concatenate([poses, np.tile(hwf[..., np.newaxis], [1,1,poses.shape[-1]])], 1)
-    
     points3dfile = os.path.join(realdir, 'sparse/0/points3D.txt')
     pts3d = read_model.read_points3D_text(points3dfile)
     
@@ -77,7 +78,7 @@ def save_poses(basedir, poses, pts3d, perm):
     vis_arr = np.array(vis_arr)
     print('Points', pts_arr.shape, 'Visibility', vis_arr.shape )
 
-    poses = np.moveaxis(poses, -1, 0)
+    poses = np.moveaxis(poses, -1, 0) # [N, 3, 5]
     poses = poses[perm]
     np.save(os.path.join(basedir, 'poses.npy'), poses)
 

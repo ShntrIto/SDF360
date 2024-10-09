@@ -11,12 +11,16 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": ["--mode", "train", 
-                     "--conf", "./confs/womask.conf", 
-                     "--case", "TanksAndTemple/Auditorium/colmap_export/preprocessed", 
+                    // "--conf", "/home/jaxa/shintaro/SDF360/exp/mp360_test/colmap/preprocessed/neus_woLdepth_masked_241007/recording/config.conf",
+                     "--conf", "./confs/womask_erp_debug.conf", 
+                    //  "--case", "TanksAndTemple/Auditorium/colmap_exportl/preprocessed", 
                     //  "--case", "DTU/scan9_opensfm/colmap/preprocessed", 
-                    //  "--case", "", 
-                     "--gpu" , "0",
-                    "--debug",]
+                    //  "--case", "OmniBlender/barbershop/colmap/preprocessed", 
+                     "--case", "mp360_test/church/colmap/preprocessed", 
+                    // "--case", "sdfstudio-demo-data/replica-room0/preprocessed",
+                    "--gpu" , "0"
+                    // "--debug",
+                    ]
         }
     ]
 }

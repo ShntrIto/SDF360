@@ -127,6 +127,7 @@ class MyRenderer:
             'sampled_color': sampled_color,
             'alpha': alpha,
             'weights': weights,
+            'mid_z_vals': mid_z_vals,
         }
 
     def up_sample(self, rays_o, rays_d, z_vals, sdf, n_importance, inv_s):
@@ -137,11 +138,7 @@ class MyRenderer:
         pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]  # n_rays, n_samples, 3
         radius = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=False)
         inside_sphere = (radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0)
-        rays_o_pts_norm = torch.linalg.norm(rays_o[:, None, :]-pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
-        # inside_sphere = torch.logical_and(((rays_o_pts_norm[:, :-1] > 0.5) | (rays_o_pts_norm[:, 1:] > 0.5)), ((radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0))).float().detach() # [N_rays, N_samples]
         sdf = sdf.reshape(batch_size, n_samples)
-        # import pdb
-        # pdb.set_trace()
         prev_sdf, next_sdf = sdf[:, :-1], sdf[:, 1:]
         prev_z_vals, next_z_vals = z_vals[:, :-1], z_vals[:, 1:]
         mid_sdf = (prev_sdf + next_sdf) * 0.5
@@ -205,6 +202,7 @@ class MyRenderer:
                     color_network,
                     background_alpha=None,
                     background_sampled_color=None,
+                    background_mid_z_vals=None,
                     background_rgb=None,
                     cos_anneal_ratio=0.0):
         """
@@ -269,7 +267,7 @@ class MyRenderer:
         estimated_next_sdf = sdf + iter_cos * dists.reshape(-1, 1) * 0.5
         estimated_prev_sdf = sdf - iter_cos * dists.reshape(-1, 1) * 0.5
 
-        # TODO: inv が何を表しているか分からない
+        # TODO: inv_s が何を表しているか分からない
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6) # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)
 
@@ -298,6 +296,13 @@ class MyRenderer:
 
         # TODO: depth を推定する
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
+        # inside_sphere のサンプル点だけを使ってデプスを推定する
+        
+        # depth = (mid_z_vals * weights[:, :n_samples] * inside_sphere).sum(dim=-1, keepdim=True) \
+        #         / weights[:, :n_samples].sum(dim=-1, keepdim=True)
+        sampled_z_vals = torch.cat([mid_z_vals, background_mid_z_vals[:, n_samples:]], dim=-1)
+        depth = (sampled_z_vals * weights).sum(dim=-1, keepdim=True)
+        
         if background_rgb is not None:    # Fixed background, usually black
             color = color + background_rgb * (1.0 - weights_sum)
 
@@ -305,9 +310,12 @@ class MyRenderer:
         gradient_norm = torch.linalg.norm(gradients.reshape(batch_size, n_samples, 3), ord=2, dim=-1)
         gradient_error = (gradient_norm - 1.0) ** 2
         gradient_error = (relax_inside_sphere * gradient_error).sum() / (relax_inside_sphere.sum() + 1e-5)
+        
+        # ZeroLevelSet loss
 
         return {
             'color': color,
+            'depth': depth, # mid_z_vals の重みづけでdepthの期待値を計算する
             'sdf': sdf,
             'dists': dists,
             'gradients': gradients.reshape(batch_size, n_samples, 3),
@@ -385,6 +393,7 @@ class MyRenderer:
 
             background_sampled_color = ret_outside['sampled_color']
             background_alpha = ret_outside['alpha']
+            background_mid_z_vals = ret_outside['mid_z_vals']
 
         # Render core
         ret_fine = self.render_core(rays_o,
@@ -397,10 +406,12 @@ class MyRenderer:
                                     background_rgb=background_rgb,
                                     background_alpha=background_alpha,
                                     background_sampled_color=background_sampled_color,
+                                    background_mid_z_vals=background_mid_z_vals,
                                     cos_anneal_ratio=cos_anneal_ratio)
 
         # レンダリング結果の取り出し
         color_fine = ret_fine['color']
+        depth_fine = ret_fine['depth']
         weights = ret_fine['weights']
         weights_sum = weights.sum(dim=-1, keepdim=True)
         gradients = ret_fine['gradients']
@@ -408,6 +419,7 @@ class MyRenderer:
 
         return {
             'color_fine': color_fine,
+            'depth_fine': depth_fine,
             's_val': s_val,
             'cdf_fine': ret_fine['cdf'],
             'weight_sum': weights_sum,

@@ -5,6 +5,7 @@ import cv2 as cv
 import trimesh
 import torch
 import torch.nn.functional as F
+
 from torch.utils.tensorboard import SummaryWriter
 from shutil import copyfile
 from icecream import ic
@@ -14,6 +15,8 @@ from models.dataset import Dataset, ErpDataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF
 # from models.renderer import NeuSRenderer
 from models.myrenderer import MyRenderer
+
+from models.loss import ScaleAndShiftInvariantLoss, ScaleInvariantLoss
 
 class Runner:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False, debug=False):
@@ -52,6 +55,7 @@ class Runner:
 
         # Weights
         self.igr_weight = self.conf.get_float('train.igr_weight')
+        self.depth_weight = self.conf.get_float('train.depth_weight')
         self.mask_weight = self.conf.get_float('train.mask_weight')
         self.is_continue = is_continue
         self.mode = mode
@@ -83,6 +87,10 @@ class Runner:
                                      self.color_network,
                                      **self.conf['model.neus_renderer'])
 
+        # Loss functions
+        self.depth_loss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
+        # self.depth_loss = ScaleInvariantLoss(alpha=0.5)
+
         # Debug
         self.debug = debug
 
@@ -112,13 +120,17 @@ class Runner:
         image_perm = self.get_image_perm()
 
         for iter_i in tqdm(range(res_step)):
-            data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            # TODO: depth損失を使う場合は，ランダムではなく順番に取り出すようにする
+            # data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            if not self.dataset.is_masked:
+                data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            elif self.dataset.is_masked and self.dataset.is_erp_image:
+                data = self.dataset.gen_unmasked_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            else:
+                print('Set is_masked argument!')
+                exit()
 
-            rays_o, rays_d, true_rgb, mask = data[:, :3], data[:, 3: 6], data[:, 6: 9], data[:, 9: 10]
-            
-            # TODO: near, far を，カメラ原点（から微小に離れた距離）から単位球の球面までに設定できるようにする
-            # 現在の実装は，Inward-looking（単位球の外から中を見る）が前提とされていて，
-            # Outward-looking（単位球の中から外を見る）ことが前提とされていない
+            rays_o, rays_d, true_rgb, mask, true_depth = data[:, :3], data[:, 3:6], data[:, 6:9], data[:, 9:10], data[:, 10:11]
             if self.dataset.is_erp_image:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o, rays_d)
             elif self.debug:
@@ -144,6 +156,7 @@ class Runner:
                                               cos_anneal_ratio=self.get_cos_anneal_ratio())
 
             color_fine = render_out['color_fine']
+            depth_fine = render_out['depth_fine'] # TODO: depth の確認
             s_val = render_out['s_val']
             cdf_fine = render_out['cdf_fine']
             gradient_error = render_out['gradient_error']
@@ -152,13 +165,20 @@ class Runner:
 
             # Loss
             color_error = (color_fine - true_rgb) * mask
+            depth_fine_loss = self.depth_loss(depth_fine[..., None], true_depth[..., None], mask[..., None]) 
             color_fine_loss = F.l1_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
-            psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt())
             eikonal_loss = gradient_error
             mask_loss = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask)
+            
             loss = color_fine_loss +\
-                   eikonal_loss * self.igr_weight +\
-                   mask_loss * self.mask_weight
+                eikonal_loss * self.igr_weight +\
+                mask_loss * self.mask_weight
+            if self.depth_weight > 0.0:
+                loss += depth_fine_loss * self.depth_weight
+
+            with torch.no_grad():
+                rgb_psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt())
+                depth_mse = ((depth_fine - true_depth)**2).sum() / mask_sum
 
             # 最適化を進める
             self.optimizer.zero_grad()
@@ -169,11 +189,13 @@ class Runner:
             # サマリーの書き込み
             self.writer.add_scalar('Loss/loss', loss, self.iter_step)
             self.writer.add_scalar('Loss/color_loss', color_fine_loss, self.iter_step)
+            self.writer.add_scalar('Loss/depth_loss', depth_fine_loss, self.iter_step)
             self.writer.add_scalar('Loss/eikonal_loss', eikonal_loss, self.iter_step)
             self.writer.add_scalar('Statistics/s_val', s_val.mean(), self.iter_step)
             self.writer.add_scalar('Statistics/cdf', (cdf_fine[:, :1] * mask).sum() / mask_sum, self.iter_step)
             self.writer.add_scalar('Statistics/weight_max', (weight_max * mask).sum() / mask_sum, self.iter_step)
-            self.writer.add_scalar('Statistics/psnr', psnr, self.iter_step)
+            self.writer.add_scalar('Statistics/rgb_psnr', rgb_psnr, self.iter_step)
+            self.writer.add_scalar('Statistics/depth_mse', depth_mse, self.iter_step)
 
             # 現在の学習状況を表示
             if self.iter_step % self.report_freq == 0:
@@ -265,6 +287,7 @@ class Runner:
         rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
 
         out_rgb_fine = []
+        out_depth_fine = []
         out_normal_fine = []
 
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
@@ -296,6 +319,9 @@ class Runner:
             if feasible('color_fine'):
                 out_rgb_fine.append(render_out['color_fine'].detach().cpu().numpy())
             
+            if feasible('depth_fine'):
+                out_depth_fine.append(render_out['depth_fine'].detach().cpu().numpy())
+            
             if feasible('gradients') and feasible('weights'):
                 n_samples = self.renderer.n_samples + self.renderer.n_importance # 最終的なサンプリング点数（coarse+fine）
                 normals = render_out['gradients'] * render_out['weights'][:, :n_samples, None]
@@ -306,12 +332,19 @@ class Runner:
                 
                 normals = normals.sum(dim=1).detach().cpu().numpy()
                 out_normal_fine.append(normals)
+
             del render_out
 
-        # レンダリング結果（RGB, 法線）を保存
+        # レンダリング結果（RGB, デプス，法線）を保存
         img_fine = None
         if len(out_rgb_fine) > 0:
             img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3, -1]) * 256).clip(0, 255)
+
+        depth_img = None
+        if len(out_depth_fine) > 0:
+            depth_img = np.concatenate(out_depth_fine, axis=0).reshape([H, W, 1, -1])
+            depth_img = (depth_img - depth_img.min()) / (depth_img.max() - depth_img.min()) * 255
+            depth_img = cv.applyColorMap(depth_img.squeeze().astype(np.uint8), cv.COLORMAP_JET)[..., None]
 
         normal_img = None
         if len(out_normal_fine) > 0:
@@ -321,6 +354,7 @@ class Runner:
                           .reshape([H, W, 3, -1]) * 128 + 128).clip(0, 255)
 
         os.makedirs(os.path.join(self.base_exp_dir, 'validations_fine'), exist_ok=True)
+        os.makedirs(os.path.join(self.base_exp_dir, 'depths'), exist_ok=True)
         os.makedirs(os.path.join(self.base_exp_dir, 'normals'), exist_ok=True)
 
         # レンダリング画像（RGB，法線）の書き込み
@@ -336,6 +370,12 @@ class Runner:
                                         'normals',
                                         '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
                                         normal_img[..., i])
+            
+            if len(out_depth_fine) > 0:
+                cv.imwrite(os.path.join(self.base_exp_dir,
+                                        'depths',
+                                        '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
+                                        depth_img[..., i])
 
     def render_novel_image(self, idx_0, idx_1, ratio, resolution_level):
         """

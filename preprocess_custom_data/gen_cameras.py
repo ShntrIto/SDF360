@@ -44,7 +44,7 @@ if __name__ == '__main__':
         intrinsic[0, 2] = (w - 1) * 0.5
         intrinsic[1, 2] = (h - 1) * 0.5
         w2c = np.linalg.inv(pose)
-        world_mat = intrinsic @ w2c
+        world_mat = intrinsic @ w2c # world_mat は，カメラ座標系から画像座標系へのP行列
         world_mat = world_mat.astype(np.float32)
         cam_dict['camera_mat_{}'.format(i)] = intrinsic
         cam_dict['camera_mat_inv_{}'.format(i)] = np.linalg.inv(intrinsic)

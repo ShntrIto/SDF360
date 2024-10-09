@@ -13,6 +13,7 @@ from mpl_toolkits.mplot3d import Axes3D
 class Dataset:
     def __init__(self, conf):
         super(Dataset, self).__init__()
+        
         print('Load data: Begin')
         self.device = torch.device('cuda')
         self.conf = conf
