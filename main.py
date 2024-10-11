@@ -17,12 +17,11 @@ parser.add_argument('--mcube_threshold', type=float, default=0.0)
 parser.add_argument('--is_continue', default=False, action="store_true")
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--case', type=str, default='')
-parser.add_argument('--debug', action='store_true') # デバッグ用
 args = parser.parse_args()
 
 torch.cuda.set_device(args.gpu)
 
-runner = Runner(args.conf, args.mode, args.case, args.is_continue, args.debug)
+runner = Runner(args.conf, args.mode, args.case, args.is_continue)
 
 if args.mode == 'train':
         runner.train()

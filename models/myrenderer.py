@@ -277,7 +277,8 @@ class MyRenderer:
         p = prev_cdf - next_cdf # NOTE: prev の方が next よりも小さいことが多いだろうという推測に基づいている?
         c = prev_cdf
 
-        alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0)
+        # 0 と計算値の max を取ることと同義
+        alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0) 
 
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
         inside_sphere = (pts_norm < 1.0).float().detach() # [N_rays, N_samples]
@@ -293,18 +294,31 @@ class MyRenderer:
 
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
         weights_sum = weights.sum(dim=-1, keepdim=True)
+        
+        ## weights を描画してみる（GitHub 参考）
+        # sdf_temp = sdf.reshape(batch_size, n_samples)
+        # import matplotlib.pyplot as plt
+        # for i in range(batch_size):
+        #     plt.figure()
+        #     plt.plot(mid_z_vals[i].detach().cpu().numpy(), sdf_temp[i].detach().cpu().numpy(), c='r', label='sdf')
+        #     plt.plot(mid_z_vals[i].detach().cpu().numpy(), (weights[i][:n_samples]/dists[i]).detach().cpu().numpy(), c='b', label='weights')
+        #     # plt.plot(sampled_z_vals[i].detach().cpu().numpy(), weights[i].detach().cpu().numpy(), c='b', label='weights')
+        #     plt.legend()
+            
+        # plt.show()
+        # plt.savefig('test.png')
+        # ##
+        # import pdb; pdb.set_trace()
 
         # TODO: depth を推定する
+        # import pdb; pdb.set_trace()
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
-        # inside_sphere のサンプル点だけを使ってデプスを推定する
+        if background_rgb is not None:    # Fixed background, usually black
+            color = color + background_rgb * (1.0 - weights_sum)
         
-        # depth = (mid_z_vals * weights[:, :n_samples] * inside_sphere).sum(dim=-1, keepdim=True) \
-        #         / weights[:, :n_samples].sum(dim=-1, keepdim=True)
         sampled_z_vals = torch.cat([mid_z_vals, background_mid_z_vals[:, n_samples:]], dim=-1)
         depth = (sampled_z_vals * weights).sum(dim=-1, keepdim=True)
         
-        if background_rgb is not None:    # Fixed background, usually black
-            color = color + background_rgb * (1.0 - weights_sum)
 
         # Eikonal loss
         gradient_norm = torch.linalg.norm(gradients.reshape(batch_size, n_samples, 3), ord=2, dim=-1)
@@ -327,7 +341,7 @@ class MyRenderer:
             'inside_sphere': inside_sphere
         }
 
-    def render(self, rays_o, rays_d, near, far, perturb_overwrite=-1, background_rgb=None, cos_anneal_ratio=0.0):
+    def render(self, rays_o, rays_d, near, far, input_pts=None, perturb_overwrite=-1, background_rgb=None, cos_anneal_ratio=0.0):
         batch_size = len(rays_o)
         
         # NOTE: 本来のNeuS では，単位球内の mid に対して，ユークリッド距離で+-1.0 の範囲でサンプリングしているため，2.0 をサンプル数で割っている
@@ -416,6 +430,11 @@ class MyRenderer:
         weights_sum = weights.sum(dim=-1, keepdim=True)
         gradients = ret_fine['gradients']
         s_val = ret_fine['s_val'].reshape(batch_size, n_samples).mean(dim=-1, keepdim=True)
+        
+        # 入力した 3 次元点の SDF
+        zls_sdf = None
+        if input_pts is not None:
+            zls_sdf = self.sdf_network(input_pts)[:, :1]
 
         return {
             'color_fine': color_fine,
@@ -427,7 +446,8 @@ class MyRenderer:
             'gradients': gradients,
             'weights': weights,
             'gradient_error': ret_fine['gradient_error'],
-            'inside_sphere': ret_fine['inside_sphere']
+            'inside_sphere': ret_fine['inside_sphere'],
+            'zls_sdf': zls_sdf
         }
 
     def extract_geometry(self, bound_min, bound_max, resolution, threshold=0.0):

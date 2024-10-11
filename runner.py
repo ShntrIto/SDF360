@@ -19,7 +19,7 @@ from models.myrenderer import MyRenderer
 from models.loss import ScaleAndShiftInvariantLoss, ScaleInvariantLoss
 
 class Runner:
-    def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False, debug=False):
+    def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False):
         self.device = torch.device('cuda')
 
         # Configuration
@@ -57,6 +57,7 @@ class Runner:
         self.igr_weight = self.conf.get_float('train.igr_weight')
         self.depth_weight = self.conf.get_float('train.depth_weight')
         self.mask_weight = self.conf.get_float('train.mask_weight')
+        self.zls_weight = self.conf.get_float('train.zls_weight')
         self.is_continue = is_continue
         self.mode = mode
         self.model_list = []
@@ -66,6 +67,7 @@ class Runner:
         params_to_train = []
         self.nerf_outside = NeRF(**self.conf['model.nerf']).to(self.device)
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
+        self.inside_outside = self.conf.get_bool('model.sdf_network.inside_outside')
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
         params_to_train += list(self.nerf_outside.parameters())
@@ -90,9 +92,6 @@ class Runner:
         # Loss functions
         self.depth_loss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
         # self.depth_loss = ScaleInvariantLoss(alpha=0.5)
-
-        # Debug
-        self.debug = debug
 
         # Load checkpoint
         latest_model_name = None
@@ -129,11 +128,16 @@ class Runner:
             else:
                 print('Set is_masked argument!')
                 exit()
+            
+            pcd_data = self.dataset.pick_random_pcds(self.batch_size // 10) # [batch_size, 3]
 
-            rays_o, rays_d, true_rgb, mask, true_depth = data[:, :3], data[:, 3:6], data[:, 6:9], data[:, 9:10], data[:, 10:11]
+            rays_o, rays_d, true_rgb, mask= data[:, :3], data[:, 3:6], data[:, 6:9], data[:, 9:10]
+            if self.depth_weight > 0.0:
+                true_depth = data[:, 10:11]
+                
             if self.dataset.is_erp_image:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o, rays_d)
-            elif self.debug:
+            elif self.inside_outside:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o, rays_d)
             else:
                 near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
@@ -151,7 +155,7 @@ class Runner:
 
             # レンダリング
             # この時点で，各 3 次元点における法線ベクトルの各要素は決まっている
-            render_out = self.renderer.render(rays_o, rays_d, near, far,
+            render_out = self.renderer.render(rays_o, rays_d, near, far, pcd_data,
                                               background_rgb=background_rgb,
                                               cos_anneal_ratio=self.get_cos_anneal_ratio())
 
@@ -162,10 +166,10 @@ class Runner:
             gradient_error = render_out['gradient_error']
             weight_max = render_out['weight_max']
             weight_sum = render_out['weight_sum']
+            zls_sdf = render_out['zls_sdf']
 
             # Loss
             color_error = (color_fine - true_rgb) * mask
-            depth_fine_loss = self.depth_loss(depth_fine[..., None], true_depth[..., None], mask[..., None]) 
             color_fine_loss = F.l1_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
             eikonal_loss = gradient_error
             mask_loss = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask)
@@ -174,11 +178,16 @@ class Runner:
                 eikonal_loss * self.igr_weight +\
                 mask_loss * self.mask_weight
             if self.depth_weight > 0.0:
+                depth_fine_loss = self.depth_loss(depth_fine[..., None], true_depth[..., None], mask[..., None]) 
                 loss += depth_fine_loss * self.depth_weight
+            if self.zls_weight > 0.0:
+                zls_loss = torch.mean(torch.abs(zls_sdf)) # SDF の値が 0 に近づくようにする
+                loss += zls_loss * self.zls_weight # ゼロレベルセットの損失
 
             with torch.no_grad():
                 rgb_psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt())
-                depth_mse = ((depth_fine - true_depth)**2).sum() / mask_sum
+                if self.depth_weight > 0.0:
+                    depth_mse = ((depth_fine - true_depth)**2).sum() / mask_sum
 
             # 最適化を進める
             self.optimizer.zero_grad()
@@ -189,14 +198,19 @@ class Runner:
             # サマリーの書き込み
             self.writer.add_scalar('Loss/loss', loss, self.iter_step)
             self.writer.add_scalar('Loss/color_loss', color_fine_loss, self.iter_step)
-            self.writer.add_scalar('Loss/depth_loss', depth_fine_loss, self.iter_step)
             self.writer.add_scalar('Loss/eikonal_loss', eikonal_loss, self.iter_step)
             self.writer.add_scalar('Statistics/s_val', s_val.mean(), self.iter_step)
             self.writer.add_scalar('Statistics/cdf', (cdf_fine[:, :1] * mask).sum() / mask_sum, self.iter_step)
             self.writer.add_scalar('Statistics/weight_max', (weight_max * mask).sum() / mask_sum, self.iter_step)
             self.writer.add_scalar('Statistics/rgb_psnr', rgb_psnr, self.iter_step)
-            self.writer.add_scalar('Statistics/depth_mse', depth_mse, self.iter_step)
-
+            
+            # 追加した損失等の書き込み
+            if self.depth_weight > 0.0:
+                self.writer.add_scalar('Statistics/depth_mse', depth_mse, self.iter_step)
+                self.writer.add_scalar('Loss/depth_loss', depth_fine_loss, self.iter_step)
+            if self.zls_weight > 0.0:
+                self.writer.add_scalar('Loss/zls_loss', zls_loss, self.iter_step)
+                
             # 現在の学習状況を表示
             if self.iter_step % self.report_freq == 0:
                 print(self.base_exp_dir)
@@ -296,7 +310,7 @@ class Runner:
             # 入力画像が 360 度画像，もしくは自作の関数を試したい場合は，カメラ原点と，光線とsphereの交点から near, far を計算する
             if self.dataset.is_erp_image:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o_batch, rays_d_batch)
-            elif self.debug:
+            elif self.inside_outside:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o_batch, rays_d_batch)
             else:
                 near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
@@ -344,7 +358,7 @@ class Runner:
         if len(out_depth_fine) > 0:
             depth_img = np.concatenate(out_depth_fine, axis=0).reshape([H, W, 1, -1])
             depth_img = (depth_img - depth_img.min()) / (depth_img.max() - depth_img.min()) * 255
-            depth_img = cv.applyColorMap(depth_img.squeeze().astype(np.uint8), cv.COLORMAP_JET)[..., None]
+            depth_img = cv.applyColorMap(depth_img.squeeze().astype(np.uint8), cv.COLORMAP_TURBO)[..., None]
 
         normal_img = None
         if len(out_normal_fine) > 0:
@@ -392,7 +406,7 @@ class Runner:
             
             if self.dataset.is_erp_image:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o_batch, rays_d_batch)
-            elif self.debug:
+            elif self.inside_outside:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o_batch, rays_d_batch)
             else:
                 near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)

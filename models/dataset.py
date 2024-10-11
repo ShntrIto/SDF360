@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import cv2 as cv
 import numpy as np
 import os
+import trimesh
 from struct import unpack
 from glob import glob
 from icecream import ic
@@ -26,45 +27,55 @@ class Dataset:
         self.camera_dict = camera_dict
         
         self.is_erp_image = conf.get_bool('is_erp_image', default=False) # 360 度画像を入力とする場合に True とする
+        
         self.images_lis = sorted(glob(os.path.join(self.data_dir, 'image/*.png')))
         # depth は dpt か npy で保存されていると仮定
         self.depths_lis = sorted(glob(os.path.join(self.data_dir, 'depths/*.dpt')) + \
                                  glob(os.path.join(self.data_dir, 'depths/*.npy')))
         self.masks_lis = sorted(glob(os.path.join(self.data_dir, 'mask/*.png')))
 
+        print('Load data: images and masks')
         self.n_images = len(self.images_lis)
         self.images_np = np.stack([cv.imread(im_name) for im_name in self.images_lis]) / 256.0
         self.masks_np = np.stack([cv.imread(im_name) for im_name in self.masks_lis]) / 256.0
-        depth_list = []
-        for im_name in self.depths_lis:
-            if im_name.endswith('.npy'):
-                depth_np = np.load(im_name)
-            elif im_name.endswith('.dpt'):
-                depth_np = read_dpt(im_name)
-            depth_list.append(depth_np)
-        self.depths_np = np.stack(depth_list)
-
+        
+        if len(self.depths_lis) != 0:
+            print('Load data: depths')
+            depth_list = []
+            for im_name in self.depths_lis:
+                if im_name.endswith('.npy'):
+                    depth_np = np.load(im_name)
+                elif im_name.endswith('.dpt'):
+                    depth_np = read_dpt(im_name)
+                depth_list.append(depth_np)
+            self.depths_np = np.stack(depth_list)
+        else:
+            self.depths_np = None
+        
+        print('Load data: point clouds')
+        self.pcd = trimesh.load(os.path.join(self.data_dir, 'sparse_points_interest.ply'))
         #
         # カメラに関する情報の取り出し
         #
 
-        # world_mat is a projection matrix from world to image
+        # world_mat: a projection matrix from world to image
+        # scale_mat: used for coordinate normalization
+        #            we assume the scene to render is inside a unit sphere at origin.
         self.world_mats_np = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-
-        # スケール行列だけは，3 次元復元を行うためには必要な作業かもしれない
-        # TODO: ワールド行列とスケール行列の関係性を今一度理解したほうがいい
-        # self.scale_mats_np = []
-        # scale_mat: used for coordinate normalization, we assume the scene to render is inside a unit sphere at origin.
         self.scale_mats_np = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
 
         self.intrinsics_all = []
         self.pose_all = []
+        
+        # カメラと点群のリスケール
         for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
             P = world_mat @ scale_mat
             P = P[:3, :4]
             intrinsics, pose = load_K_Rt_from_P(None, P, self.is_erp_image)
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.pose_all.append(torch.from_numpy(pose).float())
+        
+        self.vertices = torch.tensor(self.pcd.vertices / self.scale_mats_np[0][0, 0], dtype=torch.float32).cuda()
         
         #
         # カメラと画像に関する初期化
@@ -73,8 +84,9 @@ class Dataset:
         self.is_masked = conf.get_bool('is_masked', default=False) # 360 度画像を入力とする場合に True とする
         
         self.images = torch.from_numpy(self.images_np.astype(np.float32)).cpu()  # [n_images, H, W, 3]
-        self.depths  = torch.from_numpy(self.depths_np.astype(np.float32)).cpu()   # [n_images, H, W, 1]
         self.masks  = torch.from_numpy(self.masks_np.astype(np.float32)).cpu()   # [n_images, H, W, 3]
+        if self.depths_np is not None:
+            self.depths  = torch.from_numpy(self.depths_np.astype(np.float32)).cpu()   # [n_images, H, W, 1]
         
         self.H, self.W = self.images.shape[1], self.images.shape[2]
         self.image_pixels = self.H * self.W
@@ -119,13 +131,17 @@ class Dataset:
         pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
         color = self.images[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
         mask = self.masks[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
-        depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
+        if self.depths_np is not None:
+            depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3
         p = torch.matmul(self.intrinsics_all_inv[img_idx, None, :3, :3], p[:, :, None]).squeeze() # batch_size, 3
         rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)    # batch_size, 3
         rays_v = torch.matmul(self.pose_all[img_idx, None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) # batch_size, 3
-        return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1], depth[:, None]], dim=-1).cuda() # batch_size, 11
+        if self.depths_np is not None:
+            return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1], depth[:, None]], dim=-1).cuda() # batch_size, 11
+        else:
+            return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1).cuda() # batch_size, 10
     
     def gen_rays_between(self, idx_0, idx_1, ratio, resolution_level=1):
         """
@@ -195,6 +211,13 @@ class Dataset:
         near = torch.full(far.shape, 0.05)
         return near, far
 
+    def pick_random_pcds(self, n_points):
+        '''
+        Pick n_points from the point cloud
+        '''
+        indices = torch.randint(low=0, high=self.vertices.shape[0], size=[n_points])
+        return self.vertices[indices]
+
     def image_at(self, idx, resolution_level):
         img = cv.imread(self.images_lis[idx])
         return (cv.resize(img, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
@@ -236,7 +259,7 @@ class ErpDataset(Dataset):
         H           : Height of image
         W           : Width of image
         radius      : radius of sphere camera model (ideal radius is 1)
-        In this program, we set x-axis, y-axis, and z-axis as right, up, and backward, respectively.
+        In this program, x-axis, y-axis, and z-axis are set as right, up, and backward, respectively.
         '''
         lon = 2*torch.pi * (W - (pix[:, 0] + 0.5)) / W # [B, 1] (2pi, 0)
         lat = torch.pi * (0.5*H - (pix[:, 1] + 0.5)) / H # [B, 1] (-pi/2, pi/2)
@@ -281,8 +304,9 @@ class ErpDataset(Dataset):
         #
 
         color = self.images[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
-        depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
         mask = self.masks[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
+        if self.depths_np is not None:
+            depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
         
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3 # バッチサイズ分の視線方向を初期化
         if self.is_erp_image:
@@ -314,8 +338,9 @@ class ErpDataset(Dataset):
         #
 
         color = self.images[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
-        depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
         mask = self.masks[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
+        if self.depths_np is not None:
+            depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
         
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3 # バッチサイズ分の視線方向を初期化
         if self.is_erp_image:
