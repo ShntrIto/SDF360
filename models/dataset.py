@@ -71,11 +71,10 @@ class Dataset:
         for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
             P = world_mat @ scale_mat
             P = P[:3, :4]
-            intrinsics, pose = load_K_Rt_from_P(None, P, self.is_erp_image)
+            intrinsics, pose = load_K_Rt_from_P(None, P)
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.pose_all.append(torch.from_numpy(pose).float())
-        
-        self.vertices = torch.tensor(self.pcd.vertices / self.scale_mats_np[0][0, 0], dtype=torch.float32).cuda()
+        self.vertices = torch.tensor((self.pcd.vertices - self.scale_mats_np[0][:3, 3][None]) / self.scale_mats_np[0][0, 0], dtype=torch.float32).cuda()
         
         #
         # カメラと画像に関する初期化
@@ -89,7 +88,6 @@ class Dataset:
             self.depths  = torch.from_numpy(self.depths_np.astype(np.float32)).cpu()   # [n_images, H, W, 1]
         
         self.H, self.W = self.images.shape[1], self.images.shape[2]
-        self.image_pixels = self.H * self.W
 
         self.intrinsics_all = torch.stack(self.intrinsics_all).to(self.device)   # [n_images, 4, 4]
         self.intrinsics_all_inv = torch.inverse(self.intrinsics_all)  # [n_images, 4, 4]
@@ -190,13 +188,9 @@ class Dataset:
         注目領域（単位球）の中にカメラがある場合は，カメラ原点から微小に離れた点を near,
         単位球と交差する点までの距離を far としてレンダリング範囲を定義する
         '''
-        # inner_prod_od = torch.sum(rays_o*rays_d, dim=-1, keepdim=True)
-        # power_o = torch.sum(rays_o**2, dim=-1, keepdim=True)
         inner_prod_od = torch.bmm(rays_o.view(-1, 1, 3), rays_d.view(-1, 3, 1)).view(-1, 1)
         power_o = torch.bmm(rays_o.view(-1, 1, 3), rays_o.view(-1, 3, 1)).view(-1, 1)
 
-        # t が大きい方（必然的に正の値）を単位球面への距離とする
-        # t is the distance from the camera origin to the intersection point with the unit sphere
         far1 = -inner_prod_od - torch.sqrt(inner_prod_od**2 - power_o + 1)
         far2 = -inner_prod_od + torch.sqrt(inner_prod_od**2 - power_o + 1)
         far = torch.maximum(far1, far2)
@@ -205,9 +199,6 @@ class Dataset:
             raise ValueError("The value of far must be positive")
         
         far = far + alpha * epsilon
-        # 試しに，固定値でやってみる
-        # Try a constant value
-        # far = torch.full(far.shape, 2.0)
         near = torch.full(far.shape, 0.05)
         return near, far
 
@@ -227,8 +218,6 @@ class ErpDataset(Dataset):
     def __init__(self, conf):
         super().__init__(conf)
 
-        # self.is_erp_image = conf.get_bool('is_erp_image', default=False) # 360 度画像を入力とする場合に True とする
-
     def _calc_erp_viewdirs(self, pix, H, W, radius=1):
         '''
         p [H, W, 3] : [pixel_x, pixel_y, 1] for each pixel
@@ -236,13 +225,6 @@ class ErpDataset(Dataset):
         W           : Width of image
         radius      : radius of sphere camera model (ideal radius is 1)
         '''
-        # lon = torch.pi * (2*(pix[..., 0] + 0.5)/W - 1) # [H, W] (-pi, pi)
-        # lat = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # [H, W] (-pi/2, pi/2)
-        # NeuS は，[right, down, front] で定義している気がする...
-        # 画像平面に向かって z 軸が伸びるように，実装を変更した
-        # lat = (pix[..., 1] + 0.5) * torch.pi / H - (torch.pi*0.5)
-        # lon = (2 * torch.pi * (pix[..., 0] + 0.5) / W) - torch.pi
-
         # ErpNeRF から使ってきた実装    
         lon = 2*torch.pi * (W - (pix[..., 0] + 0.5)) / W # (2pi, 0)
         lat = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # (-pi/2, pi/2)
@@ -296,8 +278,12 @@ class ErpDataset(Dataset):
         """
         Generate random rays at world space from one camera.
         """
+        # 一様分布から取り出す
         pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
         pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
+        # 正規分布から取り出す
+        # normal_dist = torch.normal(0.5*self.H, self.H/6, size=[batch_size])
+        # pixels_y = torch.clamp(torch.round(normal_dist).to(pixels_x.dtype), 0, self.H - 1)
 
         #
         # 360度画像用のランダム取り出し（TODO: 将来的には検討，実装する）
@@ -320,27 +306,28 @@ class ErpDataset(Dataset):
         
         rays_v = torch.matmul(self.pose_all[img_idx, None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3 視線方向を世界座標系へ変換
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) # batch_size, 3
-        return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1], depth[:, None]], dim=-1).cuda()    # batch_size, 11 [ray_o, ray_d, color, mask, depth]
+        
+        if self.depths_np is not None:
+            return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1], depth[:, None]], dim=-1).cuda()    # batch_size, 11 [ray_o, ray_d, color, mask, depth]
+        else:
+            return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1).cuda()    # batch_size, 11 [ray_o, ray_d, color, mask]
     
     def gen_unmasked_rays_at(self, img_idx, batch_size):
         """
         Generate random rays at world space from one camera.
         """
-        # TODO: この処理のせいで実行速度が遅くなっている可能性があるため，cpuとcudaの移動を最低限にする
-        mask = self.masks[img_idx.cpu()]
-        mask_indices = torch.nonzero(mask[:,:,0] > 0, as_tuple=False).cuda() # tuple of two tensors
         # マスクされていない画素から，ランダムな画素を選択
+        mask_indices = torch.nonzero(self.masks[img_idx][:,:,0].cuda() > 0, as_tuple=False) # tuple of two tensors
         random_indices = torch.randint(low=0, high=mask_indices.shape[0], size=[batch_size])
         pixels_y, pixels_x = mask_indices[random_indices, 0], mask_indices[random_indices, 1]
 
         #
         # 360度画像用のランダム取り出し（TODO: 将来的には検討，実装する）
         #
-
-        color = self.images[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
-        mask = self.masks[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
+        color = self.images[img_idx][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
+        mask = self.masks[img_idx][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
         if self.depths_np is not None:
-            depth = self.depths[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
+            depth = self.depths[img_idx][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 1
         
         p = torch.stack([pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1).float()  # batch_size, 3 # バッチサイズ分の視線方向を初期化
         if self.is_erp_image:
@@ -356,7 +343,7 @@ class ErpDataset(Dataset):
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) # batch_size, 3
         return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1], depth[:, None]], dim=-1).cuda()    # batch_size, 11 [ray_o, ray_d, color, mask, depth]
 
-    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=20, epsilon=0.01):
+    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=60, epsilon=0.01):
         '''
         注目領域（単位球）の中にカメラがある場合は，カメラ原点から微小に離れた点を near,
         単位球と交差する点までの距離を far としてレンダリング範囲を定義する
@@ -364,8 +351,6 @@ class ErpDataset(Dataset):
         inner_prod_od = torch.bmm(rays_o.view(-1, 1, 3), rays_d.view(-1, 3, 1)).view(-1, 1)
         power_o = torch.bmm(rays_o.view(-1, 1, 3), rays_o.view(-1, 3, 1)).view(-1, 1)
 
-        # t が大きい方（必然的に正の値）を単位球面への距離とする
-        # t is the distance from the camera origin to the intersection point with the unit sphere
         far1 = -inner_prod_od - torch.sqrt(inner_prod_od**2 - power_o + 1)
         far2 = -inner_prod_od + torch.sqrt(inner_prod_od**2 - power_o + 1)
         far = torch.maximum(far1, far2)
@@ -377,7 +362,7 @@ class ErpDataset(Dataset):
         return near, far
 
 # This function is borrowed from IDR: https://github.com/lioryariv/idr
-def load_K_Rt_from_P(filename, P=None, is_erp_image=False):
+def load_K_Rt_from_P(filename, P=None):
     '''
     P 行列から K と Rt を取り出す
     '''

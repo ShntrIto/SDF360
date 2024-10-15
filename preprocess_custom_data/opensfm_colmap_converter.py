@@ -88,15 +88,21 @@ def ConvertFormat(dir):
                 camera_id += 1
             
             for shot in reconstruction["shots"]:
-                orig_translation = np.array(reconstruction["shots"][shot]["translation"])
-                rotation = reconstruction["shots"][shot]["rotation"]
+                cam_coord_t = np.array(reconstruction["shots"][shot]["translation"])
+                rotation_angle = reconstruction["shots"][shot]["rotation"]
                 camera_name = reconstruction["shots"][shot]["camera"]
-                qvec_T = angle_axis_to_quaternion(rotation)
-                translation = orig_translation
-                # translation = -orig_translation
-                R_T = qvec2rotmat(qvec_T)
-                qvec = rotmat2qvec(R_T)
-                translation = -np.dot(R_T,orig_translation)
+                qvec = angle_axis_to_quaternion(rotation_angle)
+                translation = cam_coord_t
+                
+                # =====
+                # rotation を転置する
+                # 転置する（このままでは実行はできない）
+                # 転置した rotation を translation にかける
+                # rotmat_np = np.array(qvec2rotmat(qvec))
+                # rotmat_T = rotmat_np.T 
+                # translation = -rotmat_T @ cam_coord_t
+                # =====
+                
                 x, y = 0, 0 # 画像座標 [X, Y]
                 points3D_id = 0 # 3次元点のID [X, Y, Z]
                 qw = qvec[0]
@@ -171,7 +177,7 @@ def write_sparse(cameras, images, points3ds, output_dir):
 
     with open(images_file, 'w') as f:
         f.write("# Image list with two lines of data per image:\n")
-        f.write("#   image_id, qw, qx, qy, qz, tx, ty, tz, camera_id, name")
+        f.write("#   image_id, qw, qx, qy, qz, tx, ty, tz, camera_id, name\n")
         f.write("#   points2d[] as (X, Y, point_id)\n")
         f.write(f"# Number of images: {len(images)}\n")
         for image_name, elems in images.items():
@@ -188,7 +194,7 @@ def write_sparse(cameras, images, points3ds, output_dir):
             f.write(f"{point_id} {x} {y} {z} {int(r)} {int(g)} {int(b)} {error}\n")
 
 if __name__ == "__main__":
-    opensfm_dir = "/home/jaxa/shintaro/SDF360/dataset/mp360_test/cathedral"
+    opensfm_dir = "/home/jaxa/shintaro/SDF360/dataset/mp360_test/cathedral_renew"
     output_dir = os.path.join(opensfm_dir, "colmap/sparse/0")
     cameras, images, points3ds = ConvertFormat(opensfm_dir)
     write_sparse(cameras, images, points3ds, output_dir)
