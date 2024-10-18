@@ -103,7 +103,6 @@ class Dataset:
         object_bbox_max = np.linalg.inv(self.scale_mats_np[0]) @ object_scale_mat @ object_bbox_max[:, None]
         self.object_bbox_min = object_bbox_min[:3, 0]
         self.object_bbox_max = object_bbox_max[:3, 0]
-
         print('Load data: End')
 
     def gen_rays_at(self, img_idx, resolution_level=1):
@@ -217,6 +216,7 @@ class Dataset:
 class ErpDataset(Dataset):
     def __init__(self, conf):
         super().__init__(conf)
+        self.equ_distrib = equirecrangular_distribution(self.H, self.W)
 
     def _calc_erp_viewdirs(self, pix, H, W, radius=1):
         '''
@@ -279,11 +279,17 @@ class ErpDataset(Dataset):
         Generate random rays at world space from one camera.
         """
         # 一様分布から取り出す
-        pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
-        pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
+        # pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
+        # pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
+        
         # 正規分布から取り出す
         # normal_dist = torch.normal(0.5*self.H, self.H/6, size=[batch_size])
         # pixels_y = torch.clamp(torch.round(normal_dist).to(pixels_x.dtype), 0, self.H - 1)
+        
+        # 360度画像用の分布から取り出す
+        sample_idx = torch.multinomial(torch.tensor(self.equ_distrib), num_samples=batch_size, replacement=True)
+        pixels_x = sample_idx % self.W
+        pixels_y = sample_idx // self.W
 
         #
         # 360度画像用のランダム取り出し（TODO: 将来的には検討，実装する）
@@ -317,13 +323,27 @@ class ErpDataset(Dataset):
         Generate random rays at world space from one camera.
         """
         # マスクされていない画素から，ランダムな画素を選択
-        mask_indices = torch.nonzero(self.masks[img_idx][:,:,0].cuda() > 0, as_tuple=False) # tuple of two tensors
-        random_indices = torch.randint(low=0, high=mask_indices.shape[0], size=[batch_size])
-        pixels_y, pixels_x = mask_indices[random_indices, 0], mask_indices[random_indices, 1]
+        # mask_indices = torch.nonzero(self.masks[img_idx][:,:,0].cuda() > 0, as_tuple=False) # tuple of two tensors
+        # random_indices = torch.randint(low=0, high=mask_indices.shape[0], size=[batch_size])
+        # pixels_y, pixels_x = mask_indices[random_indices, 0], mask_indices[random_indices, 1]
 
         #
         # 360度画像用のランダム取り出し（TODO: 将来的には検討，実装する）
         #
+        
+        masked_distrib = self.equ_distrib * (self.masks[img_idx][:,:,0] > 0).detach().cpu().numpy().flatten()
+        masked_distrib = masked_distrib / masked_distrib.sum()
+        sample_idx = torch.multinomial(torch.tensor(masked_distrib), num_samples=batch_size, replacement=True)
+        pixels_x = sample_idx % self.W
+        pixels_y = sample_idx // self.W
+        
+        import matplotlib.pyplot as plt
+        plt.imshow(masked_distrib.reshape(self.H, self.W))
+        plt.colorbar()
+        plt.plot(pixels_x, pixels_y, 'ro', markersize=1)
+        plt.savefig('masked_distrib.png')
+        
+        
         color = self.images[img_idx][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
         mask = self.masks[img_idx][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
         if self.depths_np is not None:
@@ -423,3 +443,25 @@ def read_dpt(dpt_file_path):
     fid.close()
 
     return depth_data
+
+def equirecrangular_distribution(H, W, scale=5000):
+    # TODO: 不要な領域からはサンプリングをしないような工夫を取り入れる
+    PI = np.pi
+    pixels_x = np.linspace(0, W, num=W+1)
+    pixels_y = np.linspace(0, H, num=H+1)
+
+    lon = 2 * PI * (W - (pixels_x[:, None])) / W  # (2pi, 0)
+    lat = PI * (0.5 * H - (pixels_y[:, None])) / H  # (-pi/2, pi/2)
+
+    lon_diff = np.diff(lon, axis=0)
+    sin_lat_diff = np.diff(np.sin(lat), axis=0)
+    S = sin_lat_diff * lon_diff.T
+        
+    S = np.stack(S, axis=0).flatten() * scale
+    S = softmax(S)
+    
+    return S
+    
+def softmax(x):
+    x_max = x.max()
+    return np.exp(x - x_max) / np.sum(np.exp(x - x_max))
