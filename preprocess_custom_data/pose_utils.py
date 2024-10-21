@@ -38,10 +38,10 @@ def load_colmap_data(realdir):
     for k in imdata:
         # imdata から各種メタデータを取得
         im = imdata[k]
-        R = im.qvec2rotmat()
-        t = im.tvec.reshape([3,1])
+        R = im.qvec2rotmat() # 世界座標系からカメラ座標系に変換するための回転行列
+        t = im.tvec.reshape([3,1]) # カメラ座標系からみた世界座標系の原点の位置
         m = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
-        w2c_mats.append(m) # 世界座標系からカメラ座標系への外部パラメータ
+        w2c_mats.append(m) 
     
     w2c_mats = np.stack(w2c_mats, 0)
     c2w_mats = np.linalg.inv(w2c_mats)

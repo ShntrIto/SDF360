@@ -16,7 +16,7 @@
                     //  "--case", "TanksAndTemple/Auditorium/colmap_exportl/preprocessed", 
                     //  "--case", "DTU/scan9_opensfm/colmap/preprocessed", 
                     //  "--case", "OmniBlender/barbershop/colmap/preprocessed", 
-                     "--case", "mp360_test/church/colmap/preprocessed", 
+                     "--case", "mp360_test/church_renew241014/colmap/preprocessed", 
                     // "--case", "sdfstudio-demo-data/replica-room0/preprocessed",
                     "--gpu" , "0"
                     // "--debug",

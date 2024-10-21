@@ -67,7 +67,7 @@ class Dataset:
         self.intrinsics_all = []
         self.pose_all = []
         
-        # カメラと点群のリスケール
+        # 内部パラメータと点群のリスケール
         for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
             P = world_mat @ scale_mat
             P = P[:3, :4]
@@ -75,6 +75,23 @@ class Dataset:
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.pose_all.append(torch.from_numpy(pose).float())
         self.vertices = torch.tensor((self.pcd.vertices - self.scale_mats_np[0][:3, 3][None]) / self.scale_mats_np[0][0, 0], dtype=torch.float32).cuda()
+            
+        # 360 度画像の場合は，OpenSfM のカメラパラメータを直接読み込む（形式は COLMAP と同じ）
+        # 　COLMAP と同じで，w2c の回転行列と並進ベクトルが入っている
+        # レンダリング時の near, far は 3 次元点群が存在する範囲に基づいて決めるようにする
+        
+        # pose = load_openSfM(path)
+        # self.pose_all = 
+        
+        # ==========================================
+        # デバッグ用のコード
+        # saving_pose = np.stack([i.detach().numpy() for i in self.pose_all])
+        # saving_vertices = self.vertices.detach().cpu().numpy()
+        # np.save('cathedral_undistorted_subset2_pose.npy', saving_pose)
+        # np.save('cathedral_undistorted_subset2_vertices.npy', saving_vertices)
+        # import pdb; pdb.set_trace()
+        
+        # ==========================================
         
         #
         # カメラと画像に関する初期化
@@ -124,6 +141,7 @@ class Dataset:
         """
         Generate random rays at world space from one camera.
         """
+        import pdb; pdb.set_trace()
         pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
         pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
         color = self.images[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
@@ -226,12 +244,18 @@ class ErpDataset(Dataset):
         radius      : radius of sphere camera model (ideal radius is 1)
         '''
         # ErpNeRF から使ってきた実装    
-        lon = 2*torch.pi * (W - (pix[..., 0] + 0.5)) / W # (2pi, 0)
-        lat = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # (-pi/2, pi/2)
-
-        X = radius * torch.cos(lat) * torch.sin(lon)
-        Y = radius * torch.sin(lat)
-        Z = radius * torch.cos(lat) * torch.cos(lon)
+        # lon = 2*torch.pi * (W - (pix[..., 0] + 0.5)) / W # (2pi, 0)
+        # lat = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # (-pi/2, pi/2)
+        # X = radius * torch.cos(lat) * torch.sin(lon)
+        # Y = radius * torch.sin(lat)
+        # Z = radius * torch.cos(lat) * torch.cos(lon)
+        
+        theta = 2 * torch.pi * ((pix[..., 0] + 0.5) - 0.5*W) / W # (-pi, pi)
+        phi = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # (pi/2, -pi/2)
+        X = radius * torch.cos(phi) * torch.sin(theta)
+        Y = -radius * torch.sin(phi)
+        Z = radius * torch.cos(phi) * torch.cos(theta)
+        
         XYZ = torch.stack([X, Y, Z], 2).squeeze() # [H, W, 3]
         return XYZ
     
@@ -241,13 +265,22 @@ class ErpDataset(Dataset):
         H           : Height of image
         W           : Width of image
         radius      : radius of sphere camera model (ideal radius is 1)
-        In this program, x-axis, y-axis, and z-axis are set as right, up, and backward, respectively.
         '''
-        lon = 2*torch.pi * (W - (pix[:, 0] + 0.5)) / W # [B, 1] (2pi, 0)
-        lat = torch.pi * (0.5*H - (pix[:, 1] + 0.5)) / H # [B, 1] (-pi/2, pi/2)
-        X = radius * torch.cos(lat) * torch.sin(lon)
-        Y = radius * torch.sin(lat)
-        Z = radius * torch.cos(lat) * torch.cos(lon)
+        
+        # In this program, x-axis, y-axis, and z-axis are set as right, up, and backward, respectively.
+        # lon = 2*torch.pi * (W - (pix[:, 0] + 0.5)) / W # [B, 1] (2pi, 0)
+        # lat = torch.pi * (0.5*H - (pix[:, 1] + 0.5)) / H # [B, 1] (pi/2, -pi/2)
+        # X = radius * torch.cos(lat) * torch.sin(lon)
+        # Y = radius * torch.sin(lat)
+        # Z = radius * torch.cos(lat) * torch.cos(lon)
+        
+        theta = 2 * torch.pi * ((pix[:, 0] + 0.5) - 0.5*W) / W # [B, 1] (-pi, pi)
+        phi = torch.pi * (0.5*H - (pix[:, 1] + 0.5)) / H # [B, 1] (pi/2, -pi/2)
+        X = radius * torch.cos(phi) * torch.sin(theta)
+        Y = -radius * torch.sin(phi)
+        Z = radius * torch.cos(phi) * torch.cos(theta)
+        
+        
         XYZ = torch.stack([X, Y, Z], 1).squeeze() # [B, 3]
         return XYZ
 
@@ -328,21 +361,34 @@ class ErpDataset(Dataset):
         # pixels_y, pixels_x = mask_indices[random_indices, 0], mask_indices[random_indices, 1]
 
         #
-        # 360度画像用のランダム取り出し（TODO: 将来的には検討，実装する）
+        # 360度画像用のランダム取り出し
         #
         
         masked_distrib = self.equ_distrib * (self.masks[img_idx][:,:,0] > 0).detach().cpu().numpy().flatten()
-        masked_distrib = masked_distrib / masked_distrib.sum()
+        masked_index = np.where(masked_distrib > 0)[0]
+        masked_distrib[masked_index] = softmax(masked_distrib[masked_index], scale=3e8) # TODO: こんなに大きな scale を使うのは良くなさそう
         sample_idx = torch.multinomial(torch.tensor(masked_distrib), num_samples=batch_size, replacement=True)
         pixels_x = sample_idx % self.W
-        pixels_y = sample_idx // self.W
+        # pixels_y = sample_idx // self.W
+        pixels_y = torch.div(sample_idx, self.W, rounding_mode='floor')
         
-        import matplotlib.pyplot as plt
-        plt.imshow(masked_distrib.reshape(self.H, self.W))
-        plt.colorbar()
-        plt.plot(pixels_x, pixels_y, 'ro', markersize=1)
-        plt.savefig('masked_distrib.png')
+        # ==========================================
+        # デバッグ用のコード
         
+        # import matplotlib.pyplot as plt
+        # reshaped_masked_distrib = masked_distrib.reshape(self.H, self.W)
+        # masked_distrib_to_show = np.where(reshaped_masked_distrib > 0, reshaped_masked_distrib, np.nan)
+        # plt.imshow(masked_distrib_to_show)
+        # plt.colorbar()
+        # plt.plot(pixels_x.detach().cpu().numpy(), pixels_y.detach().cpu().numpy(), 'ro', markersize=1)
+        # plt.savefig('masked_distrib_scale-3e8.png')
+        # plt.close()
+        
+        # plt.imshow(self.masks[img_idx][:,:,0].detach().cpu().numpy())
+        # plt.colorbar()
+        # plt.savefig('mask.png')
+        # # import pdb; pdb.set_trace()
+        # ==========================================
         
         color = self.images[img_idx][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
         mask = self.masks[img_idx][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3
@@ -402,7 +448,7 @@ def load_K_Rt_from_P(filename, P=None):
     intrinsics[:3, :3] = K
     
     pose = np.eye(4, dtype=np.float32)
-    pose[:3, :3] = R.transpose() # world to image -> image to world
+    pose[:3, :3] = R.transpose()
     pose[:3, 3] = (t[:3] / t[3])[:, 0]
 
     return intrinsics, pose
@@ -462,6 +508,10 @@ def equirecrangular_distribution(H, W, scale=5000):
     
     return S
     
-def softmax(x):
+def softmax(x, scale=1):
+    x = x * scale
     x_max = x.max()
     return np.exp(x - x_max) / np.sum(np.exp(x - x_max))
+
+def relu(x):
+    return np.maximum(x, 0)

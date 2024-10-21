@@ -134,7 +134,7 @@ class Runner:
             rays_o, rays_d, true_rgb, mask= data[:, :3], data[:, 3:6], data[:, 6:9], data[:, 9:10]
             if self.depth_weight > 0.0:
                 true_depth = data[:, 10:11]
-                
+            
             if self.dataset.is_erp_image:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o, rays_d)
             elif self.inside_outside:
