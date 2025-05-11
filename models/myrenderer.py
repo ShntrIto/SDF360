@@ -75,6 +75,7 @@ class MyRenderer:
                  sdf_network,
                  deviation_network,
                  color_network,
+                 interest_radius,
                  n_samples,
                  n_importance,
                  n_outside,
@@ -89,6 +90,7 @@ class MyRenderer:
         self.n_outside = n_outside
         self.up_sample_steps = up_sample_steps
         self.perturb = perturb
+        self.interest_radius = interest_radius
 
     def render_core_outside(self, rays_o, rays_d, z_vals, sample_dist, nerf, background_rgb=None):
         """
@@ -137,7 +139,8 @@ class MyRenderer:
         batch_size, n_samples = z_vals.shape
         pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]  # n_rays, n_samples, 3
         radius = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=False)
-        inside_sphere = (radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0)
+        # inside_sphere = (radius[:, :-1] < 1.0) | (radius[:, 1:] < 1.0)
+        inside_sphere = (radius[:, :-1] < self.interest_radius) | (radius[:, 1:] < self.interest_radius)
         sdf = sdf.reshape(batch_size, n_samples)
         prev_sdf, next_sdf = sdf[:, :-1], sdf[:, 1:]
         prev_z_vals, next_z_vals = z_vals[:, :-1], z_vals[:, 1:]
@@ -281,9 +284,10 @@ class MyRenderer:
         alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0) 
 
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples) # [N_rays, N_samples]
-        inside_sphere = (pts_norm < 1.0).float().detach() # [N_rays, N_samples]
-        relax_inside_sphere = (pts_norm < 1.2).float().detach()
-
+        # inside_sphere = (pts_norm < 1.0).float().detach() # [N_rays, N_samples]
+        # relax_inside_sphere = (pts_norm < 1.2).float().detach()
+        inside_sphere = (pts_norm < self.interest_radius).float().detach() # [N_rays, N_samples]
+        relax_inside_sphere = (pts_norm < 1.2 * self.interest_radius).float().detach()
         # Render with background
         if background_alpha is not None:
             alpha = alpha * inside_sphere + background_alpha[:, :n_samples] * (1.0 - inside_sphere)

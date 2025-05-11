@@ -37,6 +37,7 @@ class Runner:
             self.dataset = ErpDataset(self.conf['dataset'])
         else:
             self.dataset = Dataset(self.conf['dataset'])
+        self.interest_radius = self.dataset.radius
         self.iter_step = 0
 
         # Training parameters
@@ -66,7 +67,8 @@ class Runner:
         # Networks
         params_to_train = []
         self.nerf_outside = NeRF(**self.conf['model.nerf']).to(self.device)
-        self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
+        # self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
+        self.sdf_network = SDFNetwork(self.interest_radius, **self.conf['model.sdf_network']).to(self.device)
         self.inside_outside = self.conf.get_bool('model.sdf_network.inside_outside')
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
@@ -87,6 +89,7 @@ class Runner:
                                      self.sdf_network,
                                      self.deviation_network,
                                      self.color_network,
+                                     self.interest_radius,
                                      **self.conf['model.neus_renderer'])
 
         # Loss functions
@@ -141,7 +144,7 @@ class Runner:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o, rays_d)
             else:
                 near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
-
+            import pdb; pdb.set_trace()
             background_rgb = None
             if self.use_white_bkgd:
                 background_rgb = torch.ones([1, 3])
@@ -435,8 +438,12 @@ class Runner:
             self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution, threshold=threshold)
         os.makedirs(os.path.join(self.base_exp_dir, 'meshes'), exist_ok=True)
 
-        if world_space:
-            vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
+        debug_scale = False
+        if debug_scale:
+            vertices = vertices + self.dataset.scale_mats_np[0][:3, 3][None]
+        else:
+            if world_space:
+                vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
 
         mesh = trimesh.Trimesh(vertices, triangles)
         mesh.export(os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step)))

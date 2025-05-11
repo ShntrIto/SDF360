@@ -11,6 +11,17 @@ from scipy.spatial.transform import Rotation as Rot
 from scipy.spatial.transform import Slerp
 from mpl_toolkits.mplot3d import Axes3D
 
+class Blender360Dataset:
+    def __init__(self, conf):
+        super(Blender360Dataset, self).__init__()
+        print('Load Blender360 data: Begin')
+
+        self.device = torch.device('cuda')
+        self.conf = conf
+
+        self.data_dir = conf.get_string('data_dir') # シーンのディレクトリ
+        
+
 class Dataset:
     def __init__(self, conf):
         super(Dataset, self).__init__()
@@ -18,7 +29,7 @@ class Dataset:
         self.device = torch.device('cuda')
         self.conf = conf
 
-        self.data_dir = conf.get_string('data_dir')
+        self.data_dir = conf.get_string('data_dir') 
         self.render_cameras_name = conf.get_string('render_cameras_name')
         self.object_cameras_name = conf.get_string('object_cameras_name')
         self.scale_mat_scale = conf.get_float('scale_mat_scale', default=1.1)
@@ -67,14 +78,29 @@ class Dataset:
         self.intrinsics_all = []
         self.pose_all = []
         
-        # 内部パラメータと点群のリスケール
-        for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
-            P = world_mat @ scale_mat
-            P = P[:3, :4]
-            intrinsics, pose = load_K_Rt_from_P(None, P)
-            self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
-            self.pose_all.append(torch.from_numpy(pose).float())
-        self.vertices = torch.tensor((self.pcd.vertices - self.scale_mats_np[0][:3, 3][None]) / self.scale_mats_np[0][0, 0], dtype=torch.float32).cuda()
+        debug_scale = False
+        if debug_scale:
+            # 内部パラメータと点群のリスケール
+            self.radius = self.scale_mats_np[0][0, 0]
+            for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
+                # スケールの対角要素を 1 にして，スケール変換を無効化
+                # scale_mat = scale_mat / scale_mat[0, 0]
+                scale_mat[:3, :3] = np.eye(3)
+                intrinsics, pose = load_K_Rt_from_P(None, (world_mat @ scale_mat)[:3, :4])
+                self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
+                self.pose_all.append(torch.from_numpy(pose).float())
+            
+            self.vertices = torch.tensor((self.pcd.vertices - self.scale_mats_np[0][:3, 3][None]), dtype=torch.float32).cuda()
+        else:
+            # 内部パラメータと点群のリスケール
+            for scale_mat, world_mat in zip(self.scale_mats_np, self.world_mats_np):
+                P = world_mat @ scale_mat
+                P = P[:3, :4]
+                intrinsics, pose = load_K_Rt_from_P(None, P)
+                self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
+                self.pose_all.append(torch.from_numpy(pose).float())
+            self.vertices = torch.tensor((self.pcd.vertices - self.scale_mats_np[0][:3, 3][None]) / self.scale_mats_np[0][0, 0], dtype=torch.float32).cuda()
+            self.radius = 1.0
             
         # 360 度画像の場合は，OpenSfM のカメラパラメータを直接読み込む（形式は COLMAP と同じ）
         # 　COLMAP と同じで，w2c の回転行列と並進ベクトルが入っている
@@ -112,6 +138,10 @@ class Dataset:
         self.pose_all = torch.stack(self.pose_all).to(self.device)  # [n_images, 4, 4]
         
         object_scale_mat = np.load(os.path.join(self.data_dir, self.object_cameras_name))['scale_mat_0']
+        if debug_scale:
+            # スケールをスケールで割って，スケール変換を無効化
+            # object_scale_mat = object_scale_mat / object_scale_mat[0, 0]
+            object_scale_mat[:3, :3] = np.eye(3)
         
         object_bbox_min = np.array([-1.01, -1.01, -1.01, 1.0])
         object_bbox_max = np.array([ 1.01,  1.01,  1.01, 1.0])
@@ -366,7 +396,7 @@ class ErpDataset(Dataset):
         
         masked_distrib = self.equ_distrib * (self.masks[img_idx][:,:,0] > 0).detach().cpu().numpy().flatten()
         masked_index = np.where(masked_distrib > 0)[0]
-        masked_distrib[masked_index] = softmax(masked_distrib[masked_index], scale=3e8) # TODO: こんなに大きな scale を使うのは良くなさそう
+        masked_distrib[masked_index] = softmax(masked_distrib[masked_index], scale=1e8) # TODO: こんなに大きな scale を使うのは良くなさそう
         sample_idx = torch.multinomial(torch.tensor(masked_distrib), num_samples=batch_size, replacement=True)
         pixels_x = sample_idx % self.W
         # pixels_y = sample_idx // self.W
@@ -381,13 +411,13 @@ class ErpDataset(Dataset):
         # plt.imshow(masked_distrib_to_show)
         # plt.colorbar()
         # plt.plot(pixels_x.detach().cpu().numpy(), pixels_y.detach().cpu().numpy(), 'ro', markersize=1)
-        # plt.savefig('masked_distrib_scale-3e8.png')
+        # plt.savefig('debug/masked_distrib_scale-5000_samples-10k.png')
         # plt.close()
         
         # plt.imshow(self.masks[img_idx][:,:,0].detach().cpu().numpy())
         # plt.colorbar()
         # plt.savefig('mask.png')
-        # # import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         # ==========================================
         
         color = self.images[img_idx][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
@@ -409,7 +439,7 @@ class ErpDataset(Dataset):
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) # batch_size, 3
         return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, :1], depth[:, None]], dim=-1).cuda()    # batch_size, 11 [ray_o, ray_d, color, mask, depth]
 
-    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=60, epsilon=0.01):
+    def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=600, epsilon=0.001):
         '''
         注目領域（単位球）の中にカメラがある場合は，カメラ原点から微小に離れた点を near,
         単位球と交差する点までの距離を far としてレンダリング範囲を定義する
@@ -417,14 +447,15 @@ class ErpDataset(Dataset):
         inner_prod_od = torch.bmm(rays_o.view(-1, 1, 3), rays_d.view(-1, 3, 1)).view(-1, 1)
         power_o = torch.bmm(rays_o.view(-1, 1, 3), rays_o.view(-1, 3, 1)).view(-1, 1)
 
-        far1 = -inner_prod_od - torch.sqrt(inner_prod_od**2 - power_o + 1)
-        far2 = -inner_prod_od + torch.sqrt(inner_prod_od**2 - power_o + 1)
+        far1 = -inner_prod_od - torch.sqrt(inner_prod_od**2 - power_o + self.radius**2)
+        far2 = -inner_prod_od + torch.sqrt(inner_prod_od**2 - power_o + self.radius**2)
         far = torch.maximum(far1, far2)
         if torch.any(far < 0):
+            import pdb; pdb.set_trace()
             raise ValueError("The value of far must be positive")
         
-        far = far + alpha * epsilon
-        near = torch.full(far.shape, 0.001)
+        far = far + alpha * epsilon * self.radius
+        near = torch.full(far.shape, epsilon)
         return near, far
 
 # This function is borrowed from IDR: https://github.com/lioryariv/idr
@@ -448,7 +479,7 @@ def load_K_Rt_from_P(filename, P=None):
     intrinsics[:3, :3] = K
     
     pose = np.eye(4, dtype=np.float32)
-    pose[:3, :3] = R.transpose()
+    pose[:3, :3] = R.transpose() # c2w
     pose[:3, 3] = (t[:3] / t[3])[:, 0]
 
     return intrinsics, pose
@@ -490,7 +521,7 @@ def read_dpt(dpt_file_path):
 
     return depth_data
 
-def equirecrangular_distribution(H, W, scale=5000):
+def equirecrangular_distribution(H, W, scale=2500):
     # TODO: 不要な領域からはサンプリングをしないような工夫を取り入れる
     PI = np.pi
     pixels_x = np.linspace(0, W, num=W+1)

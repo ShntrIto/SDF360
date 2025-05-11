@@ -8,6 +8,7 @@ from models.embedder import get_embedder
 # This implementation is borrowed from IDR: https://github.com/lioryariv/idr
 class SDFNetwork(nn.Module):
     def __init__(self,
+                 interest_radius, # 追加
                  d_in,
                  d_out,
                  d_hidden,
@@ -49,12 +50,14 @@ class SDFNetwork(nn.Module):
             if geometric_init:
                 # 最後から 2 番目のレイヤの重みを初期化
                 if l == self.num_layers - 2:
-                    if not inside_outside: # TODO: inside_outside の意味を理解する
+                    if not inside_outside: 
                         torch.nn.init.normal_(lin.weight, mean=np.sqrt(np.pi) / np.sqrt(dims[l]), std=0.0001)
-                        torch.nn.init.constant_(lin.bias, -bias)
+                        # torch.nn.init.constant_(lin.bias, -bias * interest_radius)
+                        torch.nn.init.constant_(lin.bias, -interest_radius)
                     else:
                         torch.nn.init.normal_(lin.weight, mean=-np.sqrt(np.pi) / np.sqrt(dims[l]), std=0.0001)
-                        torch.nn.init.constant_(lin.bias, bias)
+                        # torch.nn.init.constant_(lin.bias, bias * interest_radius)
+                        torch.nn.init.constant_(lin.bias, interest_radius)
                 elif multires > 0 and l == 0: # 最初のレイヤの重みを初期化
                     torch.nn.init.constant_(lin.bias, 0.0)
                     torch.nn.init.constant_(lin.weight[:, 3:], 0.0)

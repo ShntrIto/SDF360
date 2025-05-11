@@ -194,7 +194,7 @@ def write_sparse(cameras, images, points3ds, output_dir):
             f.write(f"{point_id} {x} {y} {z} {int(r)} {int(g)} {int(b)} {error}\n")
 
 if __name__ == "__main__":
-    opensfm_dir = "/home/jaxa/shintaro/SDF360/dataset/mp360_test/cathedral_renew"
+    opensfm_dir = "/home/jaxa/shintaro/SDF360/dataset/OmniBlender/lone_monk"
     output_dir = os.path.join(opensfm_dir, "colmap/sparse/0")
     cameras, images, points3ds = ConvertFormat(opensfm_dir)
     write_sparse(cameras, images, points3ds, output_dir)
