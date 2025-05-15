@@ -5,11 +5,9 @@ from runner import Runner
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
-# ロガーの設定
 FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
 logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
-# 引数の設定
 parser = argparse.ArgumentParser()
 parser.add_argument('--conf', type=str, default='./confs/base.conf')
 parser.add_argument('--mode', type=str, default='train')
@@ -33,4 +31,4 @@ elif args.mode.startswith('interpolate'):  # Interpolate views given two image i
     _, img_idx_0, img_idx_1 = args.mode.split('_')
     img_idx_0 = int(img_idx_0)
     img_idx_1 = int(img_idx_1)
-    runner.interpolate_view(img_idx_0, img_idx_1) # ここで gen_rays_between が必要になる TODO: 実装する
+    runner.interpolate_view(img_idx_0, img_idx_1)

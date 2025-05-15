@@ -229,7 +229,7 @@ class Dataset:
         far = mid + 1.0
         return near, far
 
-    # デバッグとして一時的にここに置く
+    # for debugging
     def calc_near_far_within_sphere(self, rays_o, rays_d, alpha=20, epsilon=0.01):
         '''
         注目領域（単位球）の中にカメラがある場合は，カメラ原点から微小に離れた点を near,
@@ -260,7 +260,7 @@ class Dataset:
         img = cv.imread(self.images_lis[idx])
         return (cv.resize(img, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
 
-# Dataset クラスを継承して，360度画像用のクラスを作成
+
 class ErpDataset(Dataset):
     def __init__(self, conf):
         super().__init__(conf)
@@ -273,12 +273,6 @@ class ErpDataset(Dataset):
         W           : Width of image
         radius      : radius of sphere camera model (ideal radius is 1)
         '''
-        # ErpNeRF から使ってきた実装    
-        # lon = 2*torch.pi * (W - (pix[..., 0] + 0.5)) / W # (2pi, 0)
-        # lat = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # (-pi/2, pi/2)
-        # X = radius * torch.cos(lat) * torch.sin(lon)
-        # Y = radius * torch.sin(lat)
-        # Z = radius * torch.cos(lat) * torch.cos(lon)
         
         theta = 2 * torch.pi * ((pix[..., 0] + 0.5) - 0.5*W) / W # (-pi, pi)
         phi = torch.pi * (0.5*H - (pix[..., 1] + 0.5)) / H # (pi/2, -pi/2)
@@ -296,13 +290,6 @@ class ErpDataset(Dataset):
         W           : Width of image
         radius      : radius of sphere camera model (ideal radius is 1)
         '''
-        
-        # In this program, x-axis, y-axis, and z-axis are set as right, up, and backward, respectively.
-        # lon = 2*torch.pi * (W - (pix[:, 0] + 0.5)) / W # [B, 1] (2pi, 0)
-        # lat = torch.pi * (0.5*H - (pix[:, 1] + 0.5)) / H # [B, 1] (pi/2, -pi/2)
-        # X = radius * torch.cos(lat) * torch.sin(lon)
-        # Y = radius * torch.sin(lat)
-        # Z = radius * torch.cos(lat) * torch.cos(lon)
         
         theta = 2 * torch.pi * ((pix[:, 0] + 0.5) - 0.5*W) / W # [B, 1] (-pi, pi)
         phi = torch.pi * (0.5*H - (pix[:, 1] + 0.5)) / H # [B, 1] (pi/2, -pi/2)
@@ -330,7 +317,7 @@ class ErpDataset(Dataset):
             rays_v = self._calc_erp_viewdirs(p, self.H, self.W)
 
         else:
-            p = torch.matmul(self.intrinsics_all_inv[img_idx, None, None, :3, :3], p[:, :, :, None]).squeeze() # W, H, 3 # カメラ座標系における視線方向を定義
+            p = torch.matmul(self.intrinsics_all_inv[img_idx, None, None, :3, :3], p[:, :, :, None]).squeeze() # W, H, 3 
             rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
         
         rays_v = torch.matmul(self.pose_all[img_idx, None, None, :3, :3], rays_v[:, :, :, None]).squeeze()  # W, H, 3
@@ -341,11 +328,10 @@ class ErpDataset(Dataset):
         """
         Generate random rays at world space from one camera.
         """
-        # 一様分布から取り出す
+        
         # pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
         # pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
         
-        # 正規分布から取り出す
         # normal_dist = torch.normal(0.5*self.H, self.H/6, size=[batch_size])
         # pixels_y = torch.clamp(torch.round(normal_dist).to(pixels_x.dtype), 0, self.H - 1)
         
@@ -353,10 +339,6 @@ class ErpDataset(Dataset):
         sample_idx = torch.multinomial(torch.tensor(self.equ_distrib), num_samples=batch_size, replacement=True)
         pixels_x = sample_idx % self.W
         pixels_y = sample_idx // self.W
-
-        #
-        # 360度画像用のランダム取り出し（TODO: 将来的には検討，実装する）
-        #
 
         color = self.images[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]    # batch_size, 3
         mask = self.masks[img_idx.cpu()][(pixels_y.cpu(), pixels_x.cpu())]      # batch_size, 3

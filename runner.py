@@ -78,12 +78,6 @@ class Runner:
         params_to_train += list(self.color_network.parameters())
 
         self.optimizer = torch.optim.Adam(params_to_train, lr=self.learning_rate)
-
-        # self.renderer = NeuSRenderer(self.nerf_outside,
-        #                              self.sdf_network,
-        #                              self.deviation_network,
-        #                              self.color_network,
-        #                              **self.conf['model.neus_renderer'])
         
         self.renderer = MyRenderer(self.nerf_outside,
                                      self.sdf_network,
@@ -94,7 +88,6 @@ class Runner:
 
         # Loss functions
         self.depth_loss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
-        # self.depth_loss = ScaleInvariantLoss(alpha=0.5)
 
         # Load checkpoint
         latest_model_name = None
@@ -122,7 +115,6 @@ class Runner:
         image_perm = self.get_image_perm()
 
         for iter_i in tqdm(range(res_step)):
-            # TODO: depth損失を使う場合は，ランダムではなく順番に取り出すようにする
             # data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
             if not self.dataset.is_masked:
                 data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
@@ -144,7 +136,7 @@ class Runner:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o, rays_d)
             else:
                 near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
-            import pdb; pdb.set_trace()
+            
             background_rgb = None
             if self.use_white_bkgd:
                 background_rgb = torch.ones([1, 3])
@@ -156,14 +148,12 @@ class Runner:
 
             mask_sum = mask.sum() + 1e-5
 
-            # レンダリング
-            # この時点で，各 3 次元点における法線ベクトルの各要素は決まっている
             render_out = self.renderer.render(rays_o, rays_d, near, far, pcd_data,
                                               background_rgb=background_rgb,
                                               cos_anneal_ratio=self.get_cos_anneal_ratio())
 
             color_fine = render_out['color_fine']
-            depth_fine = render_out['depth_fine'] # TODO: depth の確認
+            depth_fine = render_out['depth_fine']
             s_val = render_out['s_val']
             cdf_fine = render_out['cdf_fine']
             gradient_error = render_out['gradient_error']
@@ -184,21 +174,19 @@ class Runner:
                 depth_fine_loss = self.depth_loss(depth_fine[..., None], true_depth[..., None], mask[..., None]) 
                 loss += depth_fine_loss * self.depth_weight
             if self.zls_weight > 0.0:
-                zls_loss = torch.mean(torch.abs(zls_sdf)) # SDF の値が 0 に近づくようにする
-                loss += zls_loss * self.zls_weight # ゼロレベルセットの損失
+                zls_loss = torch.mean(torch.abs(zls_sdf))
+                loss += zls_loss * self.zls_weight # zelo level set loss
 
             with torch.no_grad():
                 rgb_psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt())
                 if self.depth_weight > 0.0:
                     depth_mse = ((depth_fine - true_depth)**2).sum() / mask_sum
 
-            # 最適化を進める
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             self.iter_step += 1
 
-            # サマリーの書き込み
             self.writer.add_scalar('Loss/loss', loss, self.iter_step)
             self.writer.add_scalar('Loss/color_loss', color_fine_loss, self.iter_step)
             self.writer.add_scalar('Loss/eikonal_loss', eikonal_loss, self.iter_step)
@@ -207,14 +195,12 @@ class Runner:
             self.writer.add_scalar('Statistics/weight_max', (weight_max * mask).sum() / mask_sum, self.iter_step)
             self.writer.add_scalar('Statistics/rgb_psnr', rgb_psnr, self.iter_step)
             
-            # 追加した損失等の書き込み
             if self.depth_weight > 0.0:
                 self.writer.add_scalar('Statistics/depth_mse', depth_mse, self.iter_step)
                 self.writer.add_scalar('Loss/depth_loss', depth_fine_loss, self.iter_step)
             if self.zls_weight > 0.0:
                 self.writer.add_scalar('Loss/zls_loss', zls_loss, self.iter_step)
                 
-            # 現在の学習状況を表示
             if self.iter_step % self.report_freq == 0:
                 print(self.base_exp_dir)
                 print('iter:{:8>d} loss = {} lr={}'.format(self.iter_step, loss, self.optimizer.param_groups[0]['lr']))
@@ -240,7 +226,7 @@ class Runner:
         if self.anneal_end == 0.0:
             return 1.0
         else:
-            return np.min([1.0, self.iter_step / self.anneal_end]) # iter_step が anneal_end を超えたら 1.0 を返す
+            return np.min([1.0, self.iter_step / self.anneal_end])
 
     def update_learning_rate(self):
         if self.iter_step < self.warm_up_end:
@@ -310,7 +296,7 @@ class Runner:
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
             # near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
             
-            # 入力画像が 360 度画像，もしくは自作の関数を試したい場合は，カメラ原点と，光線とsphereの交点から near, far を計算する
+            # if the input image is ERP image, calculate near, far with the intersection of the ray and the sphere
             if self.dataset.is_erp_image:
                 near, far = self.dataset.calc_near_far_within_sphere(rays_o_batch, rays_d_batch)
             elif self.inside_outside:
@@ -321,16 +307,13 @@ class Runner:
             background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
 
 
-            # ここで，光線ごとの法線および RGB 値がレンダリングされる
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
                                               near,
                                               far,
-                                              cos_anneal_ratio=self.get_cos_anneal_ratio(), # REVIEW: cos_anneal_ratio は何を指す？
+                                              cos_anneal_ratio=self.get_cos_anneal_ratio(),
                                               background_rgb=background_rgb)
 
-            # render_out に key が存在すれば True を返す
-            # feasible は"実現可能" という意味
             def feasible(key): return (key in render_out) and (render_out[key] is not None) 
 
             if feasible('color_fine'):
@@ -340,10 +323,9 @@ class Runner:
                 out_depth_fine.append(render_out['depth_fine'].detach().cpu().numpy())
             
             if feasible('gradients') and feasible('weights'):
-                n_samples = self.renderer.n_samples + self.renderer.n_importance # 最終的なサンプリング点数（coarse+fine）
+                n_samples = self.renderer.n_samples + self.renderer.n_importance #（coarse+fine）
                 normals = render_out['gradients'] * render_out['weights'][:, :n_samples, None]
 
-                # normals は，単位球内のみに限定されている
                 if feasible('inside_sphere'):
                     normals = normals * render_out['inside_sphere'][..., None]
                 
@@ -352,7 +334,6 @@ class Runner:
 
             del render_out
 
-        # レンダリング結果（RGB, デプス，法線）を保存
         img_fine = None
         if len(out_rgb_fine) > 0:
             img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3, -1]) * 256).clip(0, 255)
@@ -374,7 +355,6 @@ class Runner:
         os.makedirs(os.path.join(self.base_exp_dir, 'depths'), exist_ok=True)
         os.makedirs(os.path.join(self.base_exp_dir, 'normals'), exist_ok=True)
 
-        # レンダリング画像（RGB，法線）の書き込み
         for i in range(img_fine.shape[-1]):
             if len(out_rgb_fine) > 0:
                 cv.imwrite(os.path.join(self.base_exp_dir,
