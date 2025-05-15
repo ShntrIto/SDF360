@@ -1,0 +1,14 @@
+__pycache__
+
+dataset/DTU
+dataset/mp360_test
+dataset/OmniBlender
+dataset/OmniDepthBlender
+dataset/sdfstudio-demo-data
+dataset/TanksAndTemple
+exp
+debug
+tools
+visualize
+confs_myenv
+.vscode
