@@ -24,7 +24,8 @@ python main.py --mode validate_mesh --conf ./confs/womask_erp.conf --case demo-d
 ```   
 5. Evaluate mesh
 Please refer "Example of 3D Reconstruction with NeuS" in the GitHub repository below to evaluate 3D mesh.
-https://github.com/gsisaoki/Omnidirectional_Blender_3D_Datase
+
+https://github.com/gsisaoki/Omnidirectional_Blender_3D_Dataset
 
 # OB3D Dataset
 Please download our dataset through [this link](https://www.kaggle.com/datasets/shintacs/ob3d-dataset).
