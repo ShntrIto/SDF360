@@ -9,6 +9,7 @@ cd SDF360
 ```
 
 2. Preprocess data
+
 To train NeuS, it is necessary to preprocess the dataset according to the instructions provided in the [Training NeuS Using Your Custom Data](https://github.com/Totoro97/NeuS/tree/main/preprocess_custom_data)
 
 3. Run SDF360
@@ -23,6 +24,7 @@ python main.py --mode train --conf. ./confs/womask_erp.conf --case demo-data
 python main.py --mode validate_mesh --conf ./confs/womask_erp.conf --case demo-data --is_continue
 ```   
 5. Evaluate mesh
+
 Please refer "Example of 3D Reconstruction with NeuS" in the GitHub repository below to evaluate 3D mesh.
 
 https://github.com/gsisaoki/Omnidirectional_Blender_3D_Dataset
